@@ -42,7 +42,6 @@ var (
 	httpPort string
 	config map[string]string
 	startTime string
-	endTime string
 )
 
 type statistics struct {
@@ -205,6 +204,7 @@ func start(resp http.ResponseWriter,req *http.Request)  {
 		startTime = time.Now().Format("2006-01-02 15:04:05")
 	}
 	io.WriteString(resp,"已打开统计")
+
 }
 
 func saveStatistics()  {
@@ -214,12 +214,20 @@ func saveStatistics()  {
 		case <-ticker.C:{
 			statises := []Statis{}
 			for s,v := range monitorDara{
-				logger.Println("daIndex:",s.index)
-				logger.Println("		ip:",s.ip)
-				logger.Println("			option:",s.option)
-				logger.Println("				count:",v)
+				if debug{
+					logger.Println("daIndex:",s.index)
+					logger.Println("		ip:",s.ip)
+					logger.Println("			option:",s.option)
+					logger.Println("				count:",v)
+				}
 				if v.totalCount > 0 {
 					statises = append(statises,Statis{s.index,s.ip,s.option,strconv.FormatInt(v.totalCount,10),strconv.FormatInt(v.count,10)})
+					if !debug{
+						logger.Println("daIndex:",s.index)
+						logger.Println("		ip:",s.ip)
+						logger.Println("			option:",s.option)
+						logger.Println("				count:",v)
+					}
 				}
 			}
 			sendSelect(client,saveIndex)
@@ -252,47 +260,6 @@ type Statis struct {
 	Count string
 }
 
-func startCon()  {
-	defer func() {<-lock}()
-	lock <- 1
-	if started {
-		logger.Println("mointor has start")
-		return
-	}
-	started = true
-	connect()
-	go monitor()
-	go saveStatistics()
-	logger.Println("start monitor")
-	if startTime == ""{
-		startTime = time.Now().Format("2006-01-02 15:04:05")
-	}
-}
-func stopCon()  {
-	if !started {
-		logger.Println("mointor has stopped")
-		return
-	}
-	sendSelect(client,saveIndex)
-	timeout := 60*60 //单位秒
-	cmds := []string{"expire","redis_statistics",strconv.Itoa(timeout)}
-	SendCommand(cmds)
-	defer func() {
-		if err:=recover() ; err != nil {
-			logger.Println("stop info",err)
-		}
-	}()
-	defer func() {
-		<-lock
-		client = nil
-	}()
-	lock <- 1
-	started = false
-	closeChan <- struct{}{}
-	stopTicket <- 1
-	client.Close()
-}
-
 func stop(resp http.ResponseWriter,req *http.Request)  {
 	if !started{
 		logger.Println("mointor has stopped")
@@ -315,7 +282,9 @@ func stop(resp http.ResponseWriter,req *http.Request)  {
 	}()
 	lock <- 1
 	started = false
-	closeChan <- struct{}{}
+	closeChanLen := len(closeChan)
+	log.Println("closeChanLen:",closeChanLen)
+	go func() {closeChan <- struct{}{}}()
 	stopTicket <- 1
 	client.Close()
 }
@@ -338,7 +307,6 @@ func monitor() {
 	}
 
 	mode = rawMode
-
 	for {
 		select {
 		case mr := <-respChan:
@@ -346,11 +314,13 @@ func monitor() {
 			//logger.Printf("\n")
 		case <-stopChan:
 			logger.Println("Error: Server closed the connection")
+			started = false
 			return
 		}
 	}
 
 }
+
 
 func readConfig() map[string]string {
 	m := make(map[string]string)
@@ -380,6 +350,9 @@ func readConfig() map[string]string {
 
 func statisticsLog(logs string)  {
 	logs = strings.ToLower(logs)
+	if logs == ""{
+		return
+	}
 	l1 := strings.Split(logs," ")
 	if len(l1) < 4{
 		return
@@ -518,11 +491,10 @@ func printRawReply(level int, reply interface{}) {
 	case error:{
 		logger.Println("printRawReply error:",reply)
 		if strings.Contains(reply.Error(),"use of closed network connection"){
-			stopCon()
 			time.Sleep(time.Second * 10)
-			startCon()
+			go monitor()
+			log.Println("重新建立连接")
 		}
-		//os.Exit(0)
 	}
 	default:{
 		logger.Printf("Unknown reply type 1: %+v", reply)
